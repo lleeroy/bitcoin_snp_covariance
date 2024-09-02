@@ -9,10 +9,12 @@ use reqwest::{
     Method,
 };
 
+/// Struct to handle historical data processing.
 pub struct HistoricalData;
 
 #[allow(unused)]
 #[derive(Debug, Serialize, Deserialize)]
+/// Represents the covariance and correlation coefficient between two tokens.
 pub struct HistoricalDataCovariance {
     pub token_1: Token,
     pub token_2: Token,
@@ -20,6 +22,7 @@ pub struct HistoricalDataCovariance {
     pub correlation_coefficient: f64,
 }
 
+/// Enum representing supported tokens for data.
 #[derive(Debug, Serialize, Deserialize)]
 pub enum Token {
     Bitcoin,
@@ -29,6 +32,7 @@ pub enum Token {
 }
 
 impl Token {
+    /// Returns the identifier used in Yahoo Finance API for the token.
     pub fn id(&self) -> &str {
         match *self {
             Token::Ethereum => "ETH-USD",
@@ -38,6 +42,15 @@ impl Token {
         }
     }
 
+    /// Creates a `Token` enum from a string.
+    ///
+    /// # Arguments
+    ///
+    /// * `token` - A string slice representing the token name.
+    ///
+    /// # Returns
+    ///
+    /// * `Option<Token>` - Representing the token if valid, `None` if invalid.
     pub fn from_str(token: &str) -> Option<Token> {
         match token.to_lowercase().as_str() {
             "bitcoin" | "btc" => Some(Token::Bitcoin),
@@ -48,6 +61,7 @@ impl Token {
         }
     }
 
+    /// Returns the string representation of the token.
     pub fn as_string(&self) -> &str {
         match *self {
             Token::Ethereum => "Ethereum",
@@ -59,6 +73,16 @@ impl Token {
 }
 
 impl HistoricalData {
+    /// Calculates the covariance and correlation coefficient between two tokens based on historical data.
+    ///
+    /// # Arguments
+    ///
+    /// * `token_1` - First token.
+    /// * `token_2` - Second token.
+    ///
+    /// # Returns
+    ///
+    /// * `Result<HistoricalDataCovariance, anyhow::Error>` - Result containing the calculated covariance and correlation, or an error.
     pub async fn calculate_covariance(
         token_1: Token,
         token_2: Token,
@@ -146,6 +170,41 @@ impl HistoricalData {
         })
     }
 
+    /// Calculates the realized volatility of a token based on historical data.
+    ///
+    /// # Arguments
+    ///
+    /// * `token` - The token for which to calculate realized volatility.
+    ///
+    /// # Returns
+    ///
+    /// * `Result<f64, anyhow::Error>` - Result containing the realized volatility or an error.
+    pub async fn calculate_realized_volatility(token: Token) -> Result<f64, anyhow::Error> {
+        let price_data = Self::get_yearly_data_by_token(&token).await?;
+
+        if price_data.is_empty() {
+            return Err(anyhow!("No price data available for the specified token."));
+        }
+
+        let mut sorted_dates: Vec<_> = price_data.keys().collect();
+        sorted_dates.sort(); // Ensure data is in chronological order
+
+        let prices: Vec<f64> = sorted_dates.iter().map(|date| price_data[date]).collect();
+        let log_returns: Vec<f64> = Self::calculate_log_returns(&prices)?;
+        let realized_volatility = Self::calculate_standard_deviation(&log_returns)?;
+
+        Ok(realized_volatility)
+    }
+
+    /// Fetches the yearly historical data for a given token from Yahoo Finance API.
+    ///
+    /// # Arguments
+    ///
+    /// * `token` - The token for which to fetch the historical data.
+    ///
+    /// # Returns
+    ///
+    /// * `Result<HashMap<NaiveDate, f64>, anyhow::Error>` - Result containing the historical data or an error.
     pub async fn get_yearly_data_by_token(
         token: &Token,
     ) -> Result<HashMap<NaiveDate, f64>, anyhow::Error> {
@@ -188,6 +247,11 @@ impl HistoricalData {
         }
     }
 
+    /// Returns the date from one year ago.
+    ///
+    /// # Returns
+    ///
+    /// * `DateTime<Local>` - The date and time from one year ago.
     fn get_year_ago_date() -> DateTime<Local> {
         let now = Local::now();
         let one_year_ago = now - Duration::days(365);
@@ -195,6 +259,67 @@ impl HistoricalData {
         one_year_ago
     }
 
+    /// Calculates the log returns of a given set of prices.
+    ///
+    /// # Arguments
+    ///
+    /// * `prices` - A vector of f64 representing the prices.
+    ///
+    /// # Returns
+    ///
+    /// * `Result<Vec<f64>, anyhow::Error>` - Result containing a vector of log returns or an error.
+    fn calculate_log_returns(prices: &Vec<f64>) -> Result<Vec<f64>, anyhow::Error> {
+        if prices.len() < 2 {
+            return Err(anyhow!("Not enough price points to calculate log returns."));
+        }
+
+        let log_returns = prices
+            .windows(2)
+            .map(|window| {
+                let (p1, p2) = (window[0], window[1]);
+                (p2 / p1).ln()
+            })
+            .collect();
+
+        Ok(log_returns)
+    }
+
+    /// Calculates the standard deviation of a given set of log returns.
+    ///
+    /// # Arguments
+    ///
+    /// * `log_returns` - A vector of f64 representing the log returns.
+    ///
+    /// # Returns
+    ///
+    /// * `Result<f64, anyhow::Error>` - Result containing the standard deviation or an error.
+    fn calculate_standard_deviation(log_returns: &Vec<f64>) -> Result<f64, anyhow::Error> {
+        if log_returns.is_empty() {
+            return Err(anyhow!(
+                "No log returns available to calculate standard deviation."
+            ));
+        }
+
+        let mean = log_returns.iter().sum::<f64>() / log_returns.len() as f64;
+        let variance =
+            log_returns.iter().map(|&x| (x - mean).powi(2)).sum::<f64>() / log_returns.len() as f64;
+
+        let daily_volatility = variance.sqrt();
+        let annualized_volatility = daily_volatility * (252f64).sqrt();
+
+        Ok(annualized_volatility)
+    }
+
+    /// Builds the URL for fetching historical data for a given token from Yahoo Finance API.
+    ///
+    /// # Arguments
+    ///
+    /// * `token` - The token for which to build the URL.
+    /// * `start_date` - The start date for fetching historical data.
+    ///
+    /// # Returns
+    ///
+    /// * `String` - The formatted URL.
     fn build_url(token: &Token, start_date: &DateTime<Local>) -> String {
         format!(
             "
@@ -207,6 +332,11 @@ impl HistoricalData {
         )
     }
 
+    /// Builds the required headers for the request to Yahoo Finance API.
+    ///
+    /// # Returns
+    ///
+    /// * `HeaderMap` - The header map.
     fn build_headers() -> HeaderMap {
         let mut headers = header::HeaderMap::new();
         headers.insert("accept", "*/*".parse().unwrap());

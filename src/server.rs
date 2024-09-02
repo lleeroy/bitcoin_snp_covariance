@@ -8,6 +8,11 @@ pub struct CovarianceQuery {
     token_2: Option<String>,
 }
 
+#[derive(Deserialize)]
+pub struct VolatilityQuery {
+    token: Option<String>,
+}
+
 #[get("/covariance")]
 pub async fn get_covariance(query: web::Query<CovarianceQuery>) -> impl Responder {
     // Extract token_1 and token_2 strings from the query parameters
@@ -39,6 +44,26 @@ pub async fn get_covariance(query: web::Query<CovarianceQuery>) -> impl Responde
     };
 
     match HistoricalData::calculate_covariance(token_1, token_2).await {
+        Ok(result) => HttpResponse::Ok().json(result),
+        Err(err) => HttpResponse::InternalServerError().body(err.to_string()),
+    }
+}
+
+#[get("/volatility")]
+pub async fn get_volatility(query: web::Query<VolatilityQuery>) -> impl Responder {
+    let token_str = match &query.token {
+        Some(token) => token,
+        None => return HttpResponse::BadRequest().body("Missing query parameter: token"),
+    };
+
+    let token = match Token::from_str(token_str) {
+        Some(token) => token,
+        None => {
+            return HttpResponse::BadRequest().body(format!("Invalid token value: {}", token_str))
+        }
+    };
+
+    match HistoricalData::calculate_realized_volatility(token).await {
         Ok(result) => HttpResponse::Ok().json(result),
         Err(err) => HttpResponse::InternalServerError().body(err.to_string()),
     }

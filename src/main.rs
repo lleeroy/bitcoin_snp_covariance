@@ -17,7 +17,10 @@ async fn main() -> std::io::Result<()> {
 
     HttpServer::new(move || {
         let logger = Logger::default();
-        App::new().wrap(logger).service(server::get_covariance)
+        App::new()
+            .wrap(logger)
+            .service(server::get_covariance)
+            .service(server::get_volatility)
     })
     .bind("127.0.0.1:8080")?
     .run()
