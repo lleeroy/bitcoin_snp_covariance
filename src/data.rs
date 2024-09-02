@@ -1,35 +1,59 @@
-use std::collections::{HashMap, HashSet};
-
 use crate::request::Request;
 use anyhow::anyhow;
-use chrono::{DateTime, Duration, Local, NaiveDate, Utc};
+use chrono::{DateTime, Duration, Local, NaiveDate};
+use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
+
 use reqwest::{
     header::{self, HeaderMap},
     Method,
 };
-use serde::{Deserialize, Serialize};
-use serde_json::Value;
 
-#[derive(Debug, Deserialize, Serialize)]
 pub struct HistoricalData;
 
+#[allow(unused)]
+#[derive(Debug, Serialize, Deserialize)]
+pub struct HistoricalDataCovariance {
+    pub token_1: Token,
+    pub token_2: Token,
+    pub covariance: f64,
+    pub correlation_coefficient: f64,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
 pub enum Token {
     Bitcoin,
+    Ethereum,
+    Solana,
     Snp500,
 }
 
 impl Token {
     pub fn id(&self) -> &str {
         match *self {
+            Token::Ethereum => "ETH-USD",
             Token::Bitcoin => "BTC-USD",
+            Token::Solana => "SOL-USD",
             Token::Snp500 => "%5EGSPC",
+        }
+    }
+
+    pub fn from_str(token: &str) -> Option<Token> {
+        match token.to_lowercase().as_str() {
+            "bitcoin" | "btc" => Some(Token::Bitcoin),
+            "snp500" | "snp" => Some(Token::Snp500),
+            "solana" | "sol" => Some(Token::Solana),
+            "ethereum" | "eth" => Some(Token::Ethereum),
+            _ => None,
         }
     }
 
     pub fn as_string(&self) -> &str {
         match *self {
+            Token::Ethereum => "Ethereum",
             Token::Bitcoin => "Bitcoin",
-            Token::Snp500 => "SNP500",
+            Token::Solana => "SOL-USD",
+            Token::Snp500 => "Snp500",
         }
     }
 }
@@ -38,16 +62,24 @@ impl HistoricalData {
     pub async fn calculate_covariance(
         token_1: Token,
         token_2: Token,
-    ) -> Result<f64, anyhow::Error> {
-        let token_1_data: HashMap<NaiveDate, f64> =
+    ) -> Result<HistoricalDataCovariance, anyhow::Error> {
+        let mut token_1_data: HashMap<NaiveDate, f64> =
             Self::get_yearly_data_by_token(&token_1).await?;
-        let token_2_data: HashMap<NaiveDate, f64> =
+        let mut token_2_data: HashMap<NaiveDate, f64> =
             Self::get_yearly_data_by_token(&token_2).await?;
 
-        println!("{:#?}", token_1_data);
-        println!("{:#?}", token_2_data);
+        let token_1_len = token_1_data.len();
+        let token_2_len = token_2_data.len();
 
-        todo!("Filter out results which are not present in one of two tokens.");
+        // If lengths differ, trim the larger
+        // dataset to match the smaller one
+        if token_1_len != token_2_len {
+            if token_1_len > token_2_len {
+                token_1_data.retain(|date, _| token_2_data.contains_key(date));
+            } else {
+                token_2_data.retain(|date, _| token_1_data.contains_key(date));
+            }
+        }
 
         let common_dates: Vec<NaiveDate> = token_1_data
             .keys()
@@ -61,16 +93,57 @@ impl HistoricalData {
             ));
         }
 
-        let mean1 =
-            token_1_data.iter().map(|(_, value)| value).sum::<f64>() / token_1_data.len() as f64;
+        if token_1_data.len() != token_2_data.len() {
+            return Err(anyhow!(
+                "The historical data amount from token_1<{}> is not equal to token_2<{}>.",
+                token_1.as_string(),
+                token_2.as_string()
+            ));
+        }
 
-        let mean2 =
-            token_2_data.iter().map(|(_, value)| value).sum::<f64>() / token_2_data.len() as f64;
+        let mean1 = token_1_data.values().sum::<f64>() / token_1_data.len() as f64;
+        let mean2 = token_2_data.values().sum::<f64>() / token_2_data.len() as f64;
 
-        println!("{}", mean1);
-        println!("{}", mean2);
+        let covariance = common_dates
+            .iter()
+            .map(|date| {
+                let deviation1 = token_1_data[date] - mean1;
+                let deviation2 = token_2_data[date] - mean2;
+                deviation1 * deviation2
+            })
+            .sum::<f64>()
+            / common_dates.len() as f64;
 
-        Ok(0.0)
+        // Compute standard deviations
+        let std_dev1 = (common_dates
+            .iter()
+            .map(|date| {
+                let deviation1 = token_1_data[date] - mean1;
+                deviation1 * deviation1
+            })
+            .sum::<f64>()
+            / common_dates.len() as f64)
+            .sqrt();
+
+        let std_dev2 = (common_dates
+            .iter()
+            .map(|date| {
+                let deviation2 = token_2_data[date] - mean2;
+                deviation2 * deviation2
+            })
+            .sum::<f64>()
+            / common_dates.len() as f64)
+            .sqrt();
+
+        // Compute correlation coefficient
+        let correlation_coefficient = covariance / (std_dev1 * std_dev2);
+
+        Ok(HistoricalDataCovariance {
+            covariance,
+            correlation_coefficient,
+            token_1,
+            token_2,
+        })
     }
 
     pub async fn get_yearly_data_by_token(
@@ -80,7 +153,6 @@ impl HistoricalData {
         let headers = Self::build_headers();
         let one_year_ago = Self::get_year_ago_date();
         let url = Self::build_url(&token, &one_year_ago);
-
         let res = Request::process_request(method, url, Some(headers), None).await?;
 
         if let Some(data) = res["chart"]["result"][0]["indicators"]["quote"][0]["close"].as_array()

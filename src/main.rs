@@ -1,19 +1,25 @@
 #[macro_use]
 extern crate log;
-use data::{HistoricalData, Token};
+use std::env;
+
+use actix_web::{middleware::Logger, App, HttpServer};
 use pretty_env_logger;
 
 mod data;
 mod request;
+mod server;
 
-#[tokio::main]
-async fn main() -> Result<(), anyhow::Error> {
+#[actix_web::main]
+async fn main() -> std::io::Result<()> {
+    env::set_var("RUST_LOG", "debug");
+    env::set_var("RUST_BACKTRACE", "1");
     pretty_env_logger::init();
 
-    let token_1 = Token::Bitcoin;
-    let token_2 = Token::Snp500;
-    let coviarence = HistoricalData::calculate_covariance(token_1, token_2).await?;
-
-    println!("{:#?}", coviarence);
-    Ok(())
+    HttpServer::new(move || {
+        let logger = Logger::default();
+        App::new().wrap(logger).service(server::get_covariance)
+    })
+    .bind("127.0.0.1:8080")?
+    .run()
+    .await
 }
